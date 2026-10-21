@@ -1,0 +1,14 @@
+[project]
+name = "frechet-video-distance"
+version = "0.1.0"
+description = "Compute the Fréchet Video Distance (FVD) between two sets of videos"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.5.4",
+    "opencv-python-headless>=5.0.0.93",
+    "scipy>=1.18.1",
+    # tensorflow-hub imports pkg_resources, which setuptools 81 removed
+    "setuptools<81",
+    "tensorflow>=2.21.0",
+    "tensorflow-hub>=0.16.1",
+]
