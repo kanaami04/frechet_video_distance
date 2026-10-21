@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+.DS_Store
+desktop.ini
+Thumbs.db
+
+# Evaluation videos (kept locally, not tracked)
+FVD/data/
