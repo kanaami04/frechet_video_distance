@@ -15,7 +15,7 @@ FVD = ||μ_real − μ_fake||² + Tr(Σ_real + Σ_fake − 2 (Σ_real Σ_fake)^{
 ```
 FVD/
 ├── FVD.py                      # 実行スクリプト（動画の読み込み → 埋め込み → FVD 計算）
-├── frechet_video_distance.py   # Google Research の FVD 参照実装を TF2 向けに修正したもの
+├── frechet_video_distance.py   # Google Research の FVD 参照実装を PyTorch 向けに修正したもの
 └── data/                       # 評価用動画（Git 管理外）
     ├── fake/...                # 生成動画
     └── real/...                # 実動画
@@ -53,19 +53,32 @@ uv run python FVD.py data/real data/fake
 |---|---|---|
 | `--num-frames` | 30 | 各動画の先頭から使うフレーム数 |
 | `--batch-size` | 16 | I3D に一度に入力する動画数 |
-| `--threads` | CPU コア数の半分 | 計算に使う CPU スレッド数 |
+| `--device` | 使える中で最速のもの | `mps`（Apple Silicon GPU）/ `cuda` / `cpu` |
+| `--threads` | CPU コア数の半分 | `--device cpu` のときに使う CPU スレッド数 |
 
-初回実行時に I3D モデルを TensorFlow Hub（`https://tfhub.dev/deepmind/i3d-kinetics-400/1`）からダウンロードします。
+初回実行時に I3D モデル（約 50MB）をダウンロードし、`~/.cache/torch/hub/checkpoints/` に保存します。
 
-計算は CPU で行います。TensorFlow は既定で全コアを使い切るため、`--threads` で使用スレッド数を制限しています。
-Apple M4 Pro（12 コア）での目安:
+Apple M4 Pro での目安（実動画 64 本 vs 生成動画 64 本）:
 
-| `--threads` | CPU 使用率（ピーク） | 1 本あたり |
+| `--device` | CPU 使用率（ピーク / 平均） | 1 本あたり |
 |---|---|---|
-| 6（既定） | 約 600% | 約 0.7 秒 |
-| 12 | 約 1050% | 約 0.35 秒 |
+| `mps`（既定） | 約 70% / 約 25% | 約 0.07 秒 |
+| `cpu`（6 スレッド） | 約 530% / 約 260% | 約 0.5 秒 |
 
-Apple Silicon の GPU（tensorflow-metal）は、I3D の 3 次元畳み込みが速くならず CPU より遅かったため使っていません。
+### I3D モデルについて
+
+FVD の元実装は TensorFlow Hub の `deepmind/i3d-kinetics-400/1` を使います。
+ここでは GPU（MPS / CUDA）で動かすため、[StyleGAN-V](https://github.com/universome/stylegan-v) が公開している同モデルの TorchScript 移植版を使っています。
+TensorFlow Hub 版と同じ動画で埋め込みを比較し、差が相対 1.3×10⁻⁶ 以下で FVD の値も一致することを確認しています。
+
+モデルファイルは次の順に取得を試み、SHA-256（`bec6519f…5860a5e2`）が一致することを確認します。
+いずれも同一ファイルであることを確認済みです。
+
+1. StyleGAN-V 配布元（Dropbox）: `https://www.dropbox.com/s/ge9e5ujwgetktms/i3d_torchscript.pt?dl=1`
+2. Hugging Face [flateon/FVD-I3D-torchscript](https://huggingface.co/flateon/FVD-I3D-torchscript)
+3. Hugging Face [kiwhansong/DFoT](https://huggingface.co/kiwhansong/DFoT/tree/main/metrics_models)
+
+すべて取得できなくなった場合は、DeepMind の [kinetics-i3d](https://github.com/deepmind/kinetics-i3d) にある元の重みから変換する必要があります。
 
 ### 動作確認
 
@@ -82,3 +95,5 @@ Apple Silicon の GPU（tensorflow-metal）は、I3D の 3 次元畳み込みが
 - T. Unterthiner et al., "Towards Accurate Generative Models of Video: A New Metric & Challenges", arXiv:1812.01717, 2018.
 - [google-research/frechet_video_distance](https://github.com/google-research/google-research/tree/master/frechet_video_distance)
   — `frechet_video_distance.py` はこの実装を元にしています（Apache License 2.0）。
+- I. Skorokhodov et al., "StyleGAN-V: A Continuous Video Generator with the Price, Image Quality and Perks of StyleGAN2", CVPR 2022.
+  — I3D の TorchScript 版の配布元です。
