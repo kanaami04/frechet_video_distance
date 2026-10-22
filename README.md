@@ -49,6 +49,20 @@ uv run python FVD.py data/real data/fake
 
 最後に `FVD: <値>` が表示されます。
 
+### 実動画の統計を保存して使い回す
+
+実動画側の平均・共分散は一度計算すれば変わらないため、`.npz` に保存しておけば、生成動画を何度も評価するときに再計算を省けます。
+
+```sh
+# 実動画の統計を保存（最初の 1 回だけ）
+uv run python FVD.py --save-stats data/real real_stats.npz
+
+# 以降はディレクトリの代わりに .npz を指定
+uv run python FVD.py real_stats.npz data/fake
+```
+
+`.npz` には計算時の `--num-frames` も保存され、異なる値で使おうとするとエラーになります。
+
 | オプション | 既定値 | 説明 |
 |---|---|---|
 | `--num-frames` | 30 | 各動画の先頭から使うフレーム数 |

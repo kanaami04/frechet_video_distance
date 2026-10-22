@@ -1,4 +1,8 @@
-"""Computes the FVD between a directory of real videos and one of generated videos."""
+"""Computes the FVD between a directory of real videos and one of generated videos.
+
+Either side can be a .npz of precomputed statistics saved with --save-stats,
+so the real videos only need to be embedded once.
+"""
 
 import argparse
 import os
@@ -13,9 +17,14 @@ import frechet_video_distance as fvd
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('real_dir', type=pathlib.Path, help='実動画のディレクトリ')
-    parser.add_argument('fake_dir', type=pathlib.Path, help='生成動画のディレクトリ')
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('real', type=pathlib.Path,
+                        help='実動画のディレクトリか統計の .npz（--save-stats 時は入力ディレクトリ）')
+    parser.add_argument('fake', type=pathlib.Path,
+                        help='生成動画のディレクトリか統計の .npz（--save-stats 時は出力先の .npz）')
+    parser.add_argument('--save-stats', action='store_true',
+                        help='FVD を計算せず、1 つ目のディレクトリの統計を 2 つ目のパスに保存する')
     parser.add_argument('--num-frames', type=int, default=30, help='各動画の先頭から使うフレーム数')
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--device', default=fvd.default_device(),
@@ -79,14 +88,49 @@ def embed_directory(i3d, device, directory, num_frames, batch_size):
     return np.concatenate(embeddings)
 
 
+class StatisticsLoader:
+    """ディレクトリなら動画を埋め込んで、.npz なら保存済みの統計を読んで (mu, sigma) を返す。"""
+
+    def __init__(self, args):
+        self.args = args
+        self.i3d = None
+
+    def __call__(self, path):
+        if path.suffix == '.npz':
+            return self.load(path)
+        if self.i3d is None:
+            print(f'デバイス: {self.args.device}', file=sys.stderr)
+            self.i3d = fvd.load_i3d(self.args.device)
+        embeddings = embed_directory(self.i3d, self.args.device, path,
+                                     self.args.num_frames, self.args.batch_size)
+        return fvd.calculate_statistics(embeddings)
+
+    def load(self, path):
+        stats = np.load(path)
+        if int(stats['num_frames']) != self.args.num_frames:
+            sys.exit(f'{path} は {int(stats["num_frames"])} フレームで計算された統計です'
+                     f'（--num-frames {self.args.num_frames} と一致しません）')
+        return stats['mu'], stats['sigma']
+
+
+def save_stats(args, load_statistics):
+    if args.fake.suffix != '.npz':
+        sys.exit('--save-stats の出力先は .npz にしてください')
+    mu, sigma = load_statistics(args.real)
+    np.savez(args.fake, mu=mu, sigma=sigma, num_frames=args.num_frames)
+    print(f'統計を保存しました: {args.fake}')
+
+
 def main():
     args = parse_args()
     limit_threads(args.threads)
-    print(f'デバイス: {args.device}', file=sys.stderr)
-    i3d = fvd.load_i3d(args.device)
-    real = embed_directory(i3d, args.device, args.real_dir, args.num_frames, args.batch_size)
-    fake = embed_directory(i3d, args.device, args.fake_dir, args.num_frames, args.batch_size)
-    print(f'FVD: {fvd.calculate_fvd(real, fake):.2f}')
+    load_statistics = StatisticsLoader(args)
+    if args.save_stats:
+        save_stats(args, load_statistics)
+        return
+    real = load_statistics(args.real)
+    fake = load_statistics(args.fake)
+    print(f'FVD: {fvd.frechet_distance(*real, *fake):.2f}')
 
 
 if __name__ == '__main__':
