@@ -7,8 +7,5 @@ dependencies = [
     "numpy>=2.5.4",
     "opencv-python-headless>=5.0.0.93",
     "scipy>=1.18.1",
-    # tensorflow-hub imports pkg_resources, which setuptools 81 removed
-    "setuptools<81",
-    "tensorflow>=2.21.0",
-    "tensorflow-hub>=0.16.1",
+    "torch>=2.14.1",
 ]
