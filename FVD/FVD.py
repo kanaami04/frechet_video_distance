@@ -1,122 +1,91 @@
+"""Computes the FVD between a directory of real videos and one of generated videos."""
+
+import argparse
 import os
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-import math
 import pathlib
+import sys
+
 import cv2
 import numpy as np
 import tensorflow as tf
+
 import frechet_video_distance as fvd
-from scipy.linalg import sqrtm
 
 
-def main(argv):
-    del argv
-    batch = 16
-
-    mus = []
-    sigmas = []
-
-    dirs_path = pathlib.Path('data').glob('*')
-
-    for dir_num, dir_path in enumerate(dirs_path):
-        videos_path = pathlib.Path(dir_path.as_posix()).glob('**/*.*')
-        videos_posix_path = [videos_path.as_posix() for videos_path in videos_path]
-
-        lists_of_videos = lists_of_batched_videos(videos_posix_path, batch)
-
-        videos_in_dir = []
-
-        for list_num in range(len(lists_of_videos)):
-            print(f'\n処理された動画の数: [{list_num}] {list_num*batch}/{len(lists_of_videos*batch)}')
-            videos = videos_embedding(array_of_processed_video(lists_of_videos[list_num]), videos_in_dir)
-        
-            print(videos)
-
-            #Calculates average and dispersion of videos in each directory
-            mu, sigma = calc_average_dispersion(videos)
-
-            if dir_num == 0:
-                mus.append(mu)
-                sigmas.append(sigma)
-            else:
-                mus.append(mu)
-                sigmas.append(sigma)
-
-    print(mus)
-    print(sigmas)
-
-    fake_mu = mus[0]
-    fake_sigma = sigmas[0]
-    real_mu = mus[1]
-    real_sigma = sigmas[1]
-
-    cov_mean = sqrtm(real_sigma.dot(fake_sigma)).real
-    fid = round(np.sum((real_mu - fake_mu) ** 2.0) +
-                np.trace(real_sigma + fake_sigma - 2.0 * cov_mean), 2)
-    print(f'FVD is: {fid}.')
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('real_dir', type=pathlib.Path, help='実動画のディレクトリ')
+    parser.add_argument('fake_dir', type=pathlib.Path, help='生成動画のディレクトリ')
+    parser.add_argument('--num-frames', type=int, default=30, help='各動画の先頭から使うフレーム数')
+    parser.add_argument('--batch-size', type=int, default=16)
+    parser.add_argument('--threads', type=int, default=max(1, os.cpu_count() // 2),
+                        help='計算に使う CPU スレッド数（既定: コア数の半分）')
+    return parser.parse_args()
 
 
-
-def lists_of_batched_videos(videos_path, batch):
-    array = []
-    length = math.floor((len(videos_path) / batch))
-    if len(videos_path) <= batch:
-        del videos_path
-    else:
-        for i in range(length):
-            array.append(videos_path[:batch])
-            del videos_path[:batch]
-    del videos_path
-    return array
+def limit_threads(threads):
+    """TensorFlow と OpenCV が使う CPU スレッド数を制限する。TF の演算を実行する前に呼ぶこと。"""
+    tf.config.threading.set_intra_op_parallelism_threads(threads)
+    tf.config.threading.set_inter_op_parallelism_threads(1)
+    cv2.setNumThreads(1)
 
 
-def array_of_processed_video(videos):
-    array = []
-    for video in videos:
-        print(video)
-        input_video = cv2.VideoCapture(video)
-
-        frames = []
-        for frame in range(30):
-            ret, image = input_video.read()
-
-            frames.append(image)
-
-        video = np.array(frames)
-        # print(video.shape)
-        array.append(video)
-
-        input_video.release()
-    array = np.array(array)
-    print(f'{array.shape}:{type(array)}')       # 動画が破損しているものを調べるためにプリントしている。
-    return array
+def find_videos(directory):
+    return sorted(p for p in directory.glob('**/*') if p.is_file())
 
 
-def videos_embedding(videos, array_embedded):
-    """"""
-    with tf.Graph().as_default():
-        videos = tf.constant(videos)
-        preprocess = fvd.create_id3_embedding(fvd.preprocess(videos, (224, 224)))
+def read_video(path, num_frames):
+    """先頭 num_frames フレームを RGB の [num_frames, H, W, 3] で返す。足りなければ None。"""
+    capture = cv2.VideoCapture(str(path))
+    frames = []
+    while len(frames) < num_frames:
+        ok, frame = capture.read()
+        if not ok:
+            break
+        # OpenCV は BGR で読み込むが、I3D は RGB で学習されている
+        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    capture.release()
+    if len(frames) < num_frames:
+        return None
+    return np.stack(frames)
 
-        with tf.compat.v1.Session() as sess:
-            sess.run(tf.compat.v1.global_variables_initializer())
-            sess.run(tf.compat.v1.tables_initializer())
 
-            preprocess = preprocess.eval()
-    array_embedded.append(preprocess)
-    array_embedded = np.array(array_embedded)
-    del preprocess
-    return array_embedded
+def embed_directory(i3d, directory, num_frames, batch_size):
+    """ディレクトリ内の全動画を I3D で埋め込み、[動画数, 400] で返す。"""
+    paths = find_videos(directory)
+    embeddings = []
+    batch = []
+    skipped = 0
+
+    for i, path in enumerate(paths, 1):
+        video = read_video(path, num_frames)
+        if video is None:
+            print(f'スキップ（{num_frames} フレーム未満か読み込み失敗）: {path}', file=sys.stderr)
+            skipped += 1
+        else:
+            batch.append(video)
+        if len(batch) == batch_size or (i == len(paths) and batch):
+            videos = fvd.preprocess(np.stack(batch), (224, 224))
+            embeddings.append(fvd.create_id3_embedding(i3d, videos))
+            batch = []
+            print(f'\r{directory}: {i}/{len(paths)}', end='', file=sys.stderr)
+
+    print(file=sys.stderr)
+    if skipped:
+        print(f'{directory}: {skipped} 本をスキップしました', file=sys.stderr)
+    if not embeddings:
+        sys.exit(f'{directory} に使える動画がありません')
+    return np.concatenate(embeddings)
 
 
-def calc_average_dispersion(videos):
-    videos = np.reshape(videos, (-1, 400))
-    mu = videos.mean(axis=0)
-    sigma = np.cov(videos, rowvar=False)
-    print(f'mu type {type(mu)}, sigma type {type(sigma)}')
-    return mu, sigma
+def main():
+    args = parse_args()
+    limit_threads(args.threads)
+    i3d = fvd.load_i3d()
+    real = embed_directory(i3d, args.real_dir, args.num_frames, args.batch_size)
+    fake = embed_directory(i3d, args.fake_dir, args.num_frames, args.batch_size)
+    print(f'FVD: {fvd.calculate_fvd(real, fake):.2f}')
 
 
 if __name__ == '__main__':
-    tf.compat.v1.app.run(main)
-
+    main()
