@@ -115,6 +115,18 @@ def create_id3_embedding(i3d, videos):
              return_features=True).cpu().numpy()
 
 
+def calculate_statistics(activations):
+  """Returns the mean and covariance of <float32>[num_samples, embedding_size]."""
+  return activations.mean(axis=0), np.cov(activations, rowvar=False)
+
+
+def frechet_distance(mu_real, sigma_real, mu_gen, sigma_gen):
+  """Computes the Fréchet distance between two Gaussians."""
+  cov_mean = linalg.sqrtm(sigma_real.dot(sigma_gen)).real
+  return float(np.sum((mu_real - mu_gen) ** 2) +
+               np.trace(sigma_real + sigma_gen - 2. * cov_mean))
+
+
 def calculate_fvd(real_activations, generated_activations):
   """Computes the Fréchet distance between two sets of activations.
 
@@ -125,11 +137,5 @@ def calculate_fvd(real_activations, generated_activations):
   Returns:
     The FVD as a float.
   """
-  mu_real = real_activations.mean(axis=0)
-  mu_gen = generated_activations.mean(axis=0)
-  sigma_real = np.cov(real_activations, rowvar=False)
-  sigma_gen = np.cov(generated_activations, rowvar=False)
-
-  cov_mean = linalg.sqrtm(sigma_real.dot(sigma_gen)).real
-  return float(np.sum((mu_real - mu_gen) ** 2) +
-               np.trace(sigma_real + sigma_gen - 2. * cov_mean))
+  return frechet_distance(*calculate_statistics(real_activations),
+                          *calculate_statistics(generated_activations))
